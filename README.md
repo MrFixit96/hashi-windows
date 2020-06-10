@@ -1,0 +1,1 @@
+**This repo contains scripts that are useful for installing HashiCorp tools on Windows
