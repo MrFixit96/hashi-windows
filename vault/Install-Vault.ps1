@@ -40,8 +40,8 @@ Param (
   [string] $VAULT_URL = "https://releases.hashicorp.com/Vault",
 
   [Parameter(
-    HelpMessage = 'VAULT_DIR is where to install Vault. Defaults to C:\Program Files\Hashicorp\Vault')]
-  [string] $VAULT_DIR = "C:\Program Files\Hashicorp\Vault"
+    HelpMessage = 'VAULT_DIR is where to install Vault. Defaults to C:\\Program Files\\Hashicorp\\Vault')]
+  [string] $VAULT_DIR = "C:\\Program Files\\Hashicorp\\Vault"
 )
 
 ##############################################################################################
@@ -69,7 +69,7 @@ Invoke-WebRequest "${CONSUL_URL}/${CONSUL_VERSION}/consul_${CONSUL_VERSION}_SHA2
 Invoke-WebRequest "${CONSUL_URL}/${CONSUL_VERSION}/consul_${CONSUL_VERSION}_SHA256SUMS.sig" -Outfile consul_${CONSUL_VERSION}_SHA256SUMS.sig
 
 # Check the hashes to make sure we have valid files
-findstr (get-filehash -algorithm SHA256 ${CONSUL_DIR}\consul_${CONSUL_VERSION}_windows_amd64.zip).hash.toLower() ${CONSUL_DIR}\consul_${CONSUL_VERSION}_SHA256SUMS
+get-content ${CONSUL_DIR}\*SHA256SUMS | select-string  (get-filehash -algorithm SHA256 "${CONSUL_DIR}\consul_${CONSUL_VERSION}_windows_amd64.zip").hash.toLower()
 
 # Expand out the zipfile to our directory
 Expand-Archive -Confirm -Force ${CONSUL_DIR}\consul_${CONSUL_VERSION}_windows_amd64.zip $CONSUL_DIR
@@ -105,10 +105,14 @@ Invoke-WebRequest "${VAULT_URL}/${VAULT_VERSION}/vault_${VAULT_VERSION}_SHA256SU
 Invoke-WebRequest "${VAULT_URL}/${VAULT_VERSION}/vault_${VAULT_VERSION}_SHA256SUMS.sig" -Outfile vault_${VAULT_VERSION}_SHA256SUMS.sig
 
 # Check the hashes to make sure we have valid files
-findstr (get-filehash -algorithm SHA256 ${VAULT_DIR}\vault_${VAULT_VERSION}_windows_amd64.zip).hash.toLower() ${VAULT_DIR}\vault_${VAULT_VERSION}_SHA256SUMS
+get-content ${VAULT_DIR}\*SHA256SUMS | select-string  (get-filehash -algorithm SHA256 "${VAULT_DIR}\vault_${VAULT_VERSION}_windows_amd64.zip").hash.toLower()
 
 # Expand out the zipfile to our directory
 Expand-Archive -Confirm -Force $ ${VAULT_DIR}\vault_${VAULT_VERSION}_windows_amd64.zip $VAULT_DIR
+
+# Add Vault directory to the system path (both current and future)
+$env:path += ";${VAULT_DIR}"
+[Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";${VAULT_DIR}", "Machine")
 
 # Set ProgressBar preference back to normal
 $ProgressPreference = $CurrentProgressPref;
@@ -123,14 +127,67 @@ $ProgressPreference = $CurrentProgressPref;
 New-Item -type file -Path $CONSUL_DIR -name consul-server.hcl
 
 $multiline_string = @'
- This
-   is
-     my
-       System.String.
+datacenter = "dc1"
+data_dir = "${CONSUL_DIR}\\data"
+
+#retry_join = ["xxx.xxx.xxx.xxx"]
+
+performance {
+  raft_multiplier = 1
+}
+
+server = true
+bootstrap_expect = 3
+
+ca_file = "${CONSUL_DIR}\\consul-agent-ca.pem"
+cert_file = "${CONSUL_DIR}\\dc1-server-consul-0.pem"
+key_file = "${CONSUL_DIR}\\dc1-server-consul-0-key.pem"
+verify_incoming = true
+verify_outgoing = true
+verify_server_hostname = true
+
+ui = true
+client_addr = "0.0.0.0"
+
 '@
 
-echo $multiline_string > $CONSUL_DIR\consul-server.hcl
+echo $multiline_string > ${CONSUL_DIR}\consul-server.hcl
 
+# Create consul-acl.hcl
+
+$multiline_string = @'
+acl {
+  enabled = true
+  default_policy = "allow"
+  enable_token_persistence = true
+}
+'@
+echo $multiline_string > ${CONSUL_DIR}\consul-acl.hcl
+
+# Create consul-telemetry.hcl
+$multiline_string = @'
+# UnComment These Lines to forward telemetry 
+#telemetry {
+#  metrics_path: '/v1/agent/metrics'
+#  params:
+#    format: ['prometheus']
+#
+#  statsite_address = "statsite.company.local:8125"
+#}
+
+'@
+
+echo $multiline_string > ${CONSUL_DIR}\consul-telemetry.hcl
+############################
+# Create a unique, non-privileged system user to run consul.
+$Password = Read-Host -AsSecureString
+New-LocalUser "consul" -FullName "Consul User" -Description "Consul Service Account" -Password $Password
+$Credential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList "consul", $Password
+
+# Create the Consul Service
+New-Service -Name Consul -BinaryPathName "${CONSUL_DIR}\consul.exe -configdir=${CONSUL_DIR}"  -DisplayName Consul -Description "Hashicorp Consul Service https://consul.io" -StartupType "Automatic" -Credential $Credential
+
+########################################################################################################
 # Create vault-server.hcl
 New-Item -type file -Path $VAULT_DIR -name vault-server.hcl
 
@@ -141,27 +198,135 @@ listener "tcp" {
   tls_key_file  = "C:\\path\\to\\privkey.pem"
 }
 
-seal "pkcs11" {
-  lib            = "C:\\Vault\\cryptoki.dll"
-  slot           = "0"
-  pin            = "AAAA-BBBB-CCCC-DDDD"
-  key_label      = "vault-hsm-key"
-  hmac_key_label = "vault-hsm-hmac-key"
-}
-
-storage "raft" {
-  path = "$CONSUL_DIR\\data"
-  node_id = "raft_node_1"
-}
-
-#telemetry {
-#  statsite_address = "statsite.company.local:8125"
-#}
-
 #api_addr = "{{ full URL to Vault API endpoint }}"
 
 ui = true
 
 '@
 
-echo $multiline_string > $VAULT_DIR\vault-server.hcl
+echo $multiline_string > ${VAULT_DIR}\vault-server.hcl
+
+# Create vault-seal.hcl
+$multiline_string = @'
+seal "pkcs11" {
+  lib            = "${VAULT_DIR}\\cryptoki.dll"
+  slot           = "0"
+  pin            = "AAAA-BBBB-CCCC-DDDD"
+  key_label      = "vault-hsm-key"
+  hmac_key_label = "vault-hsm-hmac-key"
+}
+
+'@
+
+echo $multiline_string > ${VAULT_DIR}\vault-seal.hcl
+
+# Create vault-storage.hcl
+$multiline_string = @'
+storage "raft" {
+  path = "${VAULT_DIR}\\data"
+  node_id = "raft_node_1"
+}
+
+'@
+
+echo $multiline_string > ${VAULT_DIR}\vault-storage.hcl
+
+# Create vault-telemetry.hcl
+$multiline_string = @'
+# UnComment These Lines to forward telemetry 
+#telemetry {
+#  statsite_address = "statsite.company.local:8125"
+#}
+
+'@
+
+echo $multiline_string > ${VAULT_DIR}\vault-telemetry.hcl
+
+############################
+# Create a unique, non-privileged system user to run Vault.
+$Password = Read-Host -AsSecureString
+New-LocalUser "Vault" -FullName "Vault User" -Description "Vault Service Account" -Password $Password
+$Credential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList "consul", $Password
+
+# Create the Vault Service 
+# ***** Vault Currently doesnt support the System Calls required to use built-in Windows Service Manager
+# ***** So we must install a service manager for binaries. NSSM is a widely used option.
+
+# Save Current ProgressBar Preference and set it to Silent because if we dont, 
+# Invoke-WebRequest blocks the stream to update the progress bar
+$CurrentProgressPref = $ProgressPreference;
+$ProgressPreference = "SilentlyContinue";
+
+# Download NSSM
+Invoke-WebRequest http://nssm.cc/release/nssm-2.24.zip -Outfile "${home}\Downloads\nssm-2.24.zip"
+mkdir C:\Program Files\NSSM
+Expand-Archive -Force "${home}\Downloads\nssm-2.24.zip" "C:\Program Files\"
+
+$FileExe="${VAULT_DIR}\vault.exe"
+& "C:\Program Files\nssm-2.24\win64\nssm.exe" install Vault "$FileExe server -configdir=${VAULT_DIR}"
+& "C:\Program Files\nssm-2.24\win64\nssm.exe" start Vault
+&$FileExe server -config="${VAULT_DIR}"
+#New-Service -Name Vault -BinaryPathName "${VAULT_DIR}\vault.exe -configdir=${VAULT_DIR}"  -DisplayName Vault -Description "Hashicorp Vault Service https://vaultproject.io" -StartupType "Automatic" -Credential $Credential
+
+######################################################################################################
+#
+# Create Encryption Key and TLS Certificates    
+#
+######################################################################################################
+
+# Execute Consul command to create a gossip key and store it in consul-server.hcl file
+$enc_key=(consul keygen)
+echo $enc_key >> ${CONSUL_DIR}\consul-server.hcl
+
+# Execute Consul command to create the CA Cert we'll be building the rest of our certs from
+consul tls ca create
+
+# Execute the Consul command to create the server certs
+consul tls cert create -server -dc dc1
+
+# Run the following command with the -client flag to create client certificates. The file name increments automatically.
+consul tls cert create -client -dc dc1
+
+# You must distribute the CA certificate, consul-agent-ca.pem, to each of the Consul agent instances as well as the agent specific cert and private key.
+
+######################################################################################################
+#
+#
+# Bootstrap the Consul ACL system and create policies/tokens
+#
+#
+#####################################################################################################
+
+$acl_tokens = (consul acl bootstrap)
+
+#Set the CONSUL_MGMT_TOKEN environment variable so we can create policies
+$CONSUL_MGMT_TOKEN = #?????? WHAT GOES HERE ?????
+
+# Create the node policy file
+$multiline_string = @'
+agent_prefix "" {
+  policy = "write"
+}
+node_prefix "" {
+  policy = "write"
+}
+service_prefix "" {
+  policy = "read"
+}
+session_prefix "" {
+  policy = "read"
+}
+
+'@
+
+echo $multiline_string > ${CONSUL_DIR}\node-policy.hcl
+
+# Generate the Consul Node ACL Policy
+consul acl policy create -token=${CONSUL_MGMT_TOKEN} -name node-policy -rules '@node-policy.hcl'
+
+# Create the node token with the newly created policy.
+$CONSUL_AGENT_TOKEN = (consul acl token create -token=${CONSUL_MGMT_TOKEN} -description "node token" -policy-name node-policy)
+
+# On all Consul Servers add the node token
+consul acl set-agent-token -token=${CONSUL_MGMT_TOKEN} agent $CONSUL_AGENT_TOKEN
+
