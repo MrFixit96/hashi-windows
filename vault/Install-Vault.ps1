@@ -102,7 +102,8 @@ Function Install-All {
 
   write-host "Starting the Consul Service"
   Start-Consul
-
+  Start-Sleep -Seconds 10
+ 
   write-host "Bootstrapping Consul ACL System"
   Setup-ACL
 
@@ -147,32 +148,37 @@ Function Install-Consul {
   if (-not (Test-Path "$CONSUL_DIR")){
     mkdir "$CONSUL_DIR"
     mkdir "$CONSUL_DIR/data"
+  
+    Set-Location "$CONSUL_DIR"
+
+    # Save Current ProgressBar Preference and set it to Silent because if we dont, 
+    # Invoke-WebRequest blocks the stream to update the progress bar
+
+    $CurrentProgressPref = $ProgressPreference;
+    $ProgressPreference = "SilentlyContinue";
+
+    # Download Consul and its signature/checksum files
+    Invoke-WebRequest "${CONSUL_URL}/${CONSUL_VERSION}/consul_${CONSUL_VERSION}_windows_amd64.zip" -Outfile consul_${CONSUL_VERSION}_windows_amd64.zip
+    Invoke-WebRequest "${CONSUL_URL}/${CONSUL_VERSION}/consul_${CONSUL_VERSION}_SHA256SUMS" -Outfile consul_${CONSUL_VERSION}_SHA256SUMS
+    Invoke-WebRequest "${CONSUL_URL}/${CONSUL_VERSION}/consul_${CONSUL_VERSION}_SHA256SUMS.sig" -Outfile consul_${CONSUL_VERSION}_SHA256SUMS.sig
+
+    # Check the hashes to make sure we have valid files
+    get-content "${CONSUL_DIR}/*SHA256SUMS"| select-string  (get-filehash -algorithm SHA256 "${CONSUL_DIR}/consul_${CONSUL_VERSION}_windows_amd64.zip").hash.toLower()
+
+    # Expand out the zipfile to our directory
+    Expand-Archive -Confirm:$false -Force "${CONSUL_DIR}/consul_${CONSUL_VERSION}_windows_amd64.zip" "$CONSUL_DIR"
+
+    # Set ProgressBar preference back to normal
+    $ProgressPreference = $CurrentProgressPref;
+
   }
+
   Set-Location "$CONSUL_DIR"
-
-  # Save Current ProgressBar Preference and set it to Silent because if we dont, 
-  # Invoke-WebRequest blocks the stream to update the progress bar
-
-  $CurrentProgressPref = $ProgressPreference;
-  $ProgressPreference = "SilentlyContinue";
-
-  # Download Consul and its signature/checksum files
-  Invoke-WebRequest "${CONSUL_URL}/${CONSUL_VERSION}/consul_${CONSUL_VERSION}_windows_amd64.zip" -Outfile consul_${CONSUL_VERSION}_windows_amd64.zip
-  Invoke-WebRequest "${CONSUL_URL}/${CONSUL_VERSION}/consul_${CONSUL_VERSION}_SHA256SUMS" -Outfile consul_${CONSUL_VERSION}_SHA256SUMS
-  Invoke-WebRequest "${CONSUL_URL}/${CONSUL_VERSION}/consul_${CONSUL_VERSION}_SHA256SUMS.sig" -Outfile consul_${CONSUL_VERSION}_SHA256SUMS.sig
-
-  # Check the hashes to make sure we have valid files
-  get-content "${CONSUL_DIR}/*SHA256SUMS"| select-string  (get-filehash -algorithm SHA256 "${CONSUL_DIR}/consul_${CONSUL_VERSION}_windows_amd64.zip").hash.toLower()
-
-  # Expand out the zipfile to our directory
-  Expand-Archive -Confirm:$false -Force "${CONSUL_DIR}/consul_${CONSUL_VERSION}_windows_amd64.zip" "$CONSUL_DIR"
 
   # Add Consul directory to the system path (both current and future)
   $env:path += ";${CONSUL_DIR}"
   [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "Machine") + ";${CONSUL_DIR}", "Machine")
 
-  # Set ProgressBar preference back to normal
-  $ProgressPreference = $CurrentProgressPref;
 
 }
 ############################################################################################
@@ -186,24 +192,25 @@ Function Install-Vault {
   if (-not (Test-Path "$VAULT_DIR")){
     mkdir "$VAULT_DIR"
     mkdir "$VAULT_DIR/data"
+  
+    Set-Location "$VAULT_DIR"
+
+    # Save Current ProgressBar Preference and set it to Silent because if we dont, 
+    # Invoke-WebRequest blocks the stream to update the progress bar
+    $CurrentProgressPref = $ProgressPreference;
+    $ProgressPreference = "SilentlyContinue";
+
+    # Download Consul and its signature/checksum files
+    Invoke-WebRequest "${VAULT_URL}/${VAULT_VERSION}/vault_${VAULT_VERSION}_windows_amd64.zip" -Outfile vault_${VAULT_VERSION}_windows_amd64.zip
+    Invoke-WebRequest "${VAULT_URL}/${VAULT_VERSION}/vault_${VAULT_VERSION}_SHA256SUMS" -Outfile vault_${VAULT_VERSION}_SHA256SUMS
+    Invoke-WebRequest "${VAULT_URL}/${VAULT_VERSION}/vault_${VAULT_VERSION}_SHA256SUMS.sig" -Outfile vault_${VAULT_VERSION}_SHA256SUMS.sig
+
+    # Check the hashes to make sure we have valid files
+    get-content "${VAULT_DIR}/*SHA256SUMS" | select-string  (get-filehash -algorithm SHA256 "${VAULT_DIR}/vault_${VAULT_VERSION}_windows_amd64.zip").hash.toLower()
+
+    # Expand out the zipfile to our directory
+    Expand-Archive -Confirm:$false -Force ${VAULT_DIR}/vault_${VAULT_VERSION}_windows_amd64.zip $VAULT_DIR
   }
-  Set-Location "$VAULT_DIR"
-
-  # Save Current ProgressBar Preference and set it to Silent because if we dont, 
-  # Invoke-WebRequest blocks the stream to update the progress bar
-  $CurrentProgressPref = $ProgressPreference;
-  $ProgressPreference = "SilentlyContinue";
-
-  # Download Consul and its signature/checksum files
-  Invoke-WebRequest "${VAULT_URL}/${VAULT_VERSION}/vault_${VAULT_VERSION}_windows_amd64.zip" -Outfile vault_${VAULT_VERSION}_windows_amd64.zip
-  Invoke-WebRequest "${VAULT_URL}/${VAULT_VERSION}/vault_${VAULT_VERSION}_SHA256SUMS" -Outfile vault_${VAULT_VERSION}_SHA256SUMS
-  Invoke-WebRequest "${VAULT_URL}/${VAULT_VERSION}/vault_${VAULT_VERSION}_SHA256SUMS.sig" -Outfile vault_${VAULT_VERSION}_SHA256SUMS.sig
-
-  # Check the hashes to make sure we have valid files
-  get-content "${VAULT_DIR}/*SHA256SUMS" | select-string  (get-filehash -algorithm SHA256 "${VAULT_DIR}/vault_${VAULT_VERSION}_windows_amd64.zip").hash.toLower()
-
-  # Expand out the zipfile to our directory
-  Expand-Archive -Confirm:$false -Force ${VAULT_DIR}/vault_${VAULT_VERSION}_windows_amd64.zip $VAULT_DIR
 
   # Add Vault directory to the system path (both current and future)
   $env:path += ";${VAULT_DIR}"
@@ -507,13 +514,13 @@ Function Create-Certs-Consul {
 #####################################################################################################
 Function Setup-ACL {
   # No idea why, but right now this function only behaves if I re-run Install-Consul.
-  Install-Consul
+  #Install-Consul
 
-  #If Consul isnt present, download Consul and Install it just to generate Certs
-  #if (-not ((get-service consul).status -match "Running") -eq $true){
-  #  Install-Consul
-  #  start-service consul
-  #}
+  # If Consul isnt present, download Consul and Install it just to generate Certs
+  if (-not ((get-service consul).status -match "Running") -eq $true){
+    Install-Consul
+    start-service consul
+  }
     
   if (-not (Test-Path "$CONSUL_DIR/policies")){
     mkdir "$CONSUL_DIR/policies"
