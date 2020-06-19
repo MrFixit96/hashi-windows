@@ -49,7 +49,7 @@ Param (
 
   [Parameter(
     HelpMessage = 'Specify which action to take (Install-All, Install-Vault, Install-Consul)')]
-  [string] $Action = "Install-All",
+  [string] $Action,
 
   [Parameter(
     HelpMessage = 'Specify whether to create Consul Service using LocalSystem account or a dedicated account name consul (default :$true == LocalSystem)')]
@@ -79,6 +79,11 @@ Function Main {
                         Setup-ACL
                         Start-Consul
       }
+      'Install-All' { Install-All
+      }
+      'Uninstall-All' { Uninstall-All
+      }
+
       Default { Install-All }
     }
   }
@@ -92,25 +97,25 @@ Function Main {
 Function Install-All {
   # Install and Configure Consul Storage Backend First
   write-host "Installing ${CONSUL_DIR}\Consul.exe"
-  Install-Consul
+  Install-Consul | Out-Null
 
   write-host "Writing ${CONSUL_DIR}\consul-server.hcl"
-  Configure-Consul
+  Configure-Consul | Out-Null
 
   write-host "Writing TLS Certs to ${CONSUL_DIR}\certs\"
-  Create-Certs-Consul
+  Create-Certs-Consul | Out-Null
 
   write-host "Starting the Consul Service"
-  Start-Consul
+  Start-Consul | Out-Null
   Start-Sleep -Seconds 10
  
   write-host "Bootstrapping Consul ACL System"
-  Setup-ACL
+  Setup-ACL | Out-Null
 
   # Install and Configure Vault Server
-  Install-Vault
-  Configure-Vault
-  Create-Certs-Vault
+  Install-Vault | Out-Null
+  Configure-Vault | Out-Null
+  Create-Certs-Vault | Out-Null
   # Configure Consul Agent on Vault Server to connect to backend cluster
   #Configure-Consul-Agent
 
@@ -130,15 +135,29 @@ Function Install-All {
   $env:CONSUL_HTTP_SSL="true"
   $env:CONSUL_TOKEN=${env:CONSUL_MGMNT_TOKEN}
 
-  write-host "\n CONSUL MANAMGENT TOKEN: $env:CONSUL_MGMT_TOKEN \n"
-  write-host "\n CONSUL AGENT TOKEN:     $env:CONSUL_AGENT_TOKEN \n"
-  write-host "\n CONSUL VAULT TOKEN:     $env:CONSUL_VAULT_TOKEN \n"
+  write-host "`n CONSUL MANAMGENT TOKEN: $env:CONSUL_MGMT_TOKEN `n"
+  write-host "`n CONSUL AGENT TOKEN:     $env:CONSUL_AGENT_TOKEN `n"
+  write-host "`n CONSUL VAULT TOKEN:     $env:CONSUL_VAULT_TOKEN `n"
 
 }
 
+###############################################################################################
+#
+#	 Uninstall-All
+#
+##############################################################################################
+Function Uninstall-All {
+  nssm stop vault
+  nssm remove vault
+  stop-service consul
+  Remove-Item -Confirm:$false -Force "$CONSUL_DIR"
+  Remove-Item -Confirm:$false -Force "$VAULT_DIR"
+  Remove-Item -Confirm:$false -Force "C:\nssm-2.24"
+
+}
 ##############################################################################################
 #
-#	Get Consul
+#	Install-Consul
 #
 ##############################################################################################
 Function Install-Consul {
@@ -166,7 +185,7 @@ Function Install-Consul {
     get-content "${CONSUL_DIR}/*SHA256SUMS"| select-string  (get-filehash -algorithm SHA256 "${CONSUL_DIR}/consul_${CONSUL_VERSION}_windows_amd64.zip").hash.toLower()
 
     # Expand out the zipfile to our directory
-    Expand-Archive -Confirm:$false -Force "${CONSUL_DIR}/consul_${CONSUL_VERSION}_windows_amd64.zip" "$CONSUL_DIR"
+    Expand-Archive -Confirm:$false -Force:$true "${CONSUL_DIR}/consul_${CONSUL_VERSION}_windows_amd64.zip" "$CONSUL_DIR"
 
     # Set ProgressBar preference back to normal
     $ProgressPreference = $CurrentProgressPref;
@@ -183,7 +202,7 @@ Function Install-Consul {
 }
 ############################################################################################
 #
-#	Get Vault
+#	Install-Vault
 #
 ##############################################################################################
 Function Install-Vault {
@@ -209,7 +228,7 @@ Function Install-Vault {
     get-content "${VAULT_DIR}/*SHA256SUMS" | select-string  (get-filehash -algorithm SHA256 "${VAULT_DIR}/vault_${VAULT_VERSION}_windows_amd64.zip").hash.toLower()
 
     # Expand out the zipfile to our directory
-    Expand-Archive -Confirm:$false -Force ${VAULT_DIR}/vault_${VAULT_VERSION}_windows_amd64.zip $VAULT_DIR
+    Expand-Archive -Confirm:$false -Force:$true ${VAULT_DIR}/vault_${VAULT_VERSION}_windows_amd64.zip $VAULT_DIR
   }
 
   # Add Vault directory to the system path (both current and future)
@@ -308,13 +327,18 @@ telemetry {
     $password = (-join ((0x30.. 0x39) + ( 0x41.. 0x5A) + ( 0x61.. 0x7A) | Get-Random -Count 16 | % {[char]$_}))
     $securePassword = (ConvertTo-SecureString -AsPlainText -Force -String $password)
 
+  if (-not (get-localuser consul).Name -match "consul"){
     New-LocalUser "consul" -FullName "Consul User" -Description "Consul Service Account" -Password $securePassword
     $Credential = New-Object -TypeName System.Management.Automation.PSCredential("consul", $securePassword)
+  }
 
+  # Local GPO is not able to be edited natively via PowerShell. Please Set account logon rights manually
 
-    # Local GPO is not able to be edited natively via PowerShell. Please Set account logon rights manually
-    # Create the Consul Service
-    if ($localuser){
+  try {
+  # Create the Consul Service
+  if (-not  (get-service consul).Name -match "Consul"){
+    write-host "Creating Service Consul"
+    if ($localuser -eq $true) {
       write-host "Creating Consul Service with LocalSystem User"
       New-Service -Name Consul -BinaryPathName "${CONSUL_DIR}/consul.exe agent -config-dir=${CONSUL_DIR}"  -DisplayName Consul -Description "Hashicorp Consul Service https://consul.io" -StartupType "Automatic"
     } else {
@@ -322,6 +346,11 @@ telemetry {
       write-host "Creating Consul Service with Consul User"
       New-Service -Name Consul -BinaryPathName "${CONSUL_DIR}/consul.exe agent -config-dir=${CONSUL_DIR}"  -DisplayName Consul -Description "Hashicorp Consul Service https://consul.io" -StartupType "Automatic" -Credential $Credential
     }
+  }
+  }
+  catch {
+    "Could not create Consul Service"
+  }
 }
 
 ######################################################################################################
@@ -413,8 +442,10 @@ telemetry {
     $password = (-join ((0x30.. 0x39) + ( 0x41.. 0x5A) + ( 0x61.. 0x7A) | Get-Random -Count 16 | % {[char]$_}))
     $securePassword = (ConvertTo-SecureString -AsPlainText -Force -String $password)
 
-    New-LocalUser "vault" -FullName "Vault User" -Description "Vault Service Account" -Password $securePassword
-    $Credential = New-Object -TypeName System.Management.Automation.PSCredential("vault", $securePassword)
+    if (-not (get-localuser vault).Name -match "vault"){    
+      New-LocalUser "vault" -FullName "Vault User" -Description "Vault Service Account" -Password $securePassword
+      $Credential = New-Object -TypeName System.Management.Automation.PSCredential("vault", $securePassword)
+    }
 
     # Create the Vault Service 
     # ***** Because Unlike Consul and Nomad, the Vault binary doesnt currently support the WinSVC System Calls required to use built-in Windows Service Manager
@@ -428,19 +459,30 @@ telemetry {
     # Download NSSM
     if (-not (Test-Path "c:\nssm-2.24")){ 
       Invoke-WebRequest http://nssm.cc/release/nssm-2.24.zip -Outfile "${home}\Downloads\nssm-2.24.zip"
-      Expand-Archive -Confirm:$false "${home}\Downloads\nssm-2.24.zip" "C:\"
-      $env:Path=$env:Path+";c:\nssm-2.24\win64\"  
+      Expand-Archive -Force "${home}\Downloads\nssm-2.24.zip" "C:\"
+      $env:Path=$env:Path+";c:\nssm-2.24\win64\"
+      [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "Machine") + ";C:\nssm-2.24\win64\", "Machine")
     }
 
     #Create Service and Start it
-    $FileExe="${VAULT_DIR}/vault.exe"
-    nssm install Vault "$FileExe"
-    nssm set Vault AppParameters "server -config=${VAULT_DIR}"
-    nssm set Vault AppDirectory  "${VAULT_DIR}"
+  try {
+    if (-not  (get-service vault).Name -match "Vault"){
+      if ($localuser -eq $true){
+        $FileExe="${VAULT_DIR}/vault.exe"
+        nssm install Vault "$FileExe"
+        nssm set Vault AppParameters "server -config=${VAULT_DIR}"
+        nssm set Vault AppDirectory  "${VAULT_DIR}"
 
-    # This is what it would look like if Vault could use the native manager
-    #New-Service -Name Vault -BinaryPathName "${VAULT_DIR}\vault.exe -configdir=${VAULT_DIR}"  -DisplayName Vault -Description "Hashicorp Vault Service https://vaultproject.io" -StartupType "Automatic" -Credential $Credential
-
+        # This is what it would look like if Vault could use the native manager and LocalSystem User
+        #New-Service -Name Vault -BinaryPathName "${VAULT_DIR}\vault.exe -configdir=${VAULT_DIR}"  -DisplayName Vault -Description "Hashicorp Vault Service https://vaultproject.io" -StartupType "Automatic"
+        # This is what it would look like if Vault could use the native manager and a unique user
+        #New-Service -Name Vault -BinaryPathName "${VAULT_DIR}\vault.exe -configdir=${VAULT_DIR}"  -DisplayName Vault -Description "Hashicorp Vault Service https://vaultproject.io" -StartupType "Automatic" -Credential $Credential
+      }
+    }
+  }
+  catch {
+    "Could not create Vault Service"
+  }
 }
 
 ######################################################################################################
@@ -613,9 +655,9 @@ session_prefix "" {
   # On all Consul Servers add the node token
   consul acl set-agent-token -token "${env:CONSUL_MGMT_TOKEN}" agent "$env:CONSUL_AGENT_TOKEN"
   
-  write-host "\n CONSUL MANAMGENT TOKEN: $env:CONSUL_MGMT_TOKEN \n"
-  write-host "\n CONSUL AGENT TOKEN:     $env:CONSUL_AGENT_TOKEN \n"
-  write-host "\n CONSUL VAULT TOKEN:     $env:CONSUL_VAULT_TOKEN \n"
+  write-debug "`n CONSUL MANAMGENT TOKEN: $env:CONSUL_MGMT_TOKEN `n"
+  write-debug "`n CONSUL AGENT TOKEN:     $env:CONSUL_AGENT_TOKEN `n"
+  write-debug "`n CONSUL VAULT TOKEN:     $env:CONSUL_VAULT_TOKEN `n"
   
   
 }
