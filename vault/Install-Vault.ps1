@@ -53,7 +53,7 @@ Param (
 
   [Parameter(
     HelpMessage = 'Specify whether to create Consul Service using LocalSystem account or a dedicated account name consul (default :$true == LocalSystem)')]
-  [string] $localuser = $true 
+  [string] $serviceUser = $true 
 
   )
 
@@ -96,13 +96,13 @@ Function Main {
 ##############################################################################################
 Function Install-All {
   # Install and Configure Consul Storage Backend First
-  write-host "Installing ${CONSUL_DIR}\Consul.exe"
+  write-host "Installing ${CONSUL_DIR}/Consul.exe"
   Install-Consul | Out-Null
 
-  write-host "Writing ${CONSUL_DIR}\consul-server.hcl"
+  write-host "Writing ${CONSUL_DIR}/consul-server.hcl"
   Configure-Consul | Out-Null
 
-  write-host "Writing TLS Certs to ${CONSUL_DIR}\certs\"
+  write-host "Writing TLS Certs to ${CONSUL_DIR}/certs/"
   Create-Certs-Consul | Out-Null
 
   write-host "Starting the Consul Service"
@@ -138,6 +138,8 @@ Function Install-All {
   write-host "`n CONSUL MANAMGENT TOKEN: $env:CONSUL_MGMT_TOKEN `n"
   write-host "`n CONSUL AGENT TOKEN:     $env:CONSUL_AGENT_TOKEN `n"
   write-host "`n CONSUL VAULT TOKEN:     $env:CONSUL_VAULT_TOKEN `n"
+  consul members list
+  vault status
 
 }
 
@@ -147,12 +149,38 @@ Function Install-All {
 #
 ##############################################################################################
 Function Uninstall-All {
-  nssm stop vault
-  nssm remove vault
-  stop-service consul
-  Remove-Item -Confirm:$false -Force "$CONSUL_DIR"
-  Remove-Item -Confirm:$false -Force "$VAULT_DIR"
-  Remove-Item -Confirm:$false -Force "C:\nssm-2.24"
+try {
+  if ((get-service vault -ErrorAction "ignore").Name -match "Vault"){
+    nssm stop vault
+    nssm remove vault
+  }
+  if ((get-service consul -ErrorAction "ignore").Name -match "Consul"){
+    stop-service consul
+    if ($PSVersionTable.PSVersion.Major -eq 5){
+      write-host "Please Edit the Registry to remove the Consul Service"
+    } ElseIf ($PSVersionTable.PSVersion.Major -ge 7){
+      Remove-Service consul
+    }
+  }
+  if ((Get-LocalUser vault -ErrorAction "ignore").Name -match "vault"){
+    Remove-LocalUser -Name "Vault"
+  }
+  if ((Get-LocalUser consul -ErrorAction "ignore").Name -match "consul"){
+    Remove-LocalUser -Name "Consul"
+  }
+  if (test-path $CONSUL_DIR -ErrorAction "ignore"){
+    Remove-Item -Force "$CONSUL_DIR"
+  }
+  if (test-path $VAULT_DIR -ErrorAction "ignore"){
+    Remove-Item -Force "$VAULT_DIR"
+  }
+  if (test-path "C:\nssm-2.24" -ErrorAction "ignore"){
+    Remove-Item -Force "C:\nssm-2.24"
+  }
+}
+catch {
+  "Uninstall Failed - please manually remove files, users and services"
+}
 
 }
 ##############################################################################################
@@ -327,7 +355,7 @@ telemetry {
     $password = (-join ((0x30.. 0x39) + ( 0x41.. 0x5A) + ( 0x61.. 0x7A) | Get-Random -Count 16 | % {[char]$_}))
     $securePassword = (ConvertTo-SecureString -AsPlainText -Force -String $password)
 
-  if (-not (get-localuser consul).Name -match "consul"){
+  if (-not ((get-localuser consul -ErrorAction "ignore").Name -match "consul")){
     New-LocalUser "consul" -FullName "Consul User" -Description "Consul Service Account" -Password $securePassword
     $Credential = New-Object -TypeName System.Management.Automation.PSCredential("consul", $securePassword)
   }
@@ -336,9 +364,9 @@ telemetry {
 
   try {
   # Create the Consul Service
-  if (-not  (get-service consul).Name -match "Consul"){
+  if (-not  ((get-service consul -ErrorAction "ignore").Name -match "Consul")){
     write-host "Creating Service Consul"
-    if ($localuser -eq $true) {
+    if ($serviceUser -eq $true) {
       write-host "Creating Consul Service with LocalSystem User"
       New-Service -Name Consul -BinaryPathName "${CONSUL_DIR}/consul.exe agent -config-dir=${CONSUL_DIR}"  -DisplayName Consul -Description "Hashicorp Consul Service https://consul.io" -StartupType "Automatic"
     } else {
@@ -442,7 +470,7 @@ telemetry {
     $password = (-join ((0x30.. 0x39) + ( 0x41.. 0x5A) + ( 0x61.. 0x7A) | Get-Random -Count 16 | % {[char]$_}))
     $securePassword = (ConvertTo-SecureString -AsPlainText -Force -String $password)
 
-    if (-not (get-localuser vault).Name -match "vault"){    
+    if (-not ((get-localuser vault -ErrorAction "ignore").Name -match "vault")){    
       New-LocalUser "vault" -FullName "Vault User" -Description "Vault Service Account" -Password $securePassword
       $Credential = New-Object -TypeName System.Management.Automation.PSCredential("vault", $securePassword)
     }
@@ -466,8 +494,8 @@ telemetry {
 
     #Create Service and Start it
   try {
-    if (-not  (get-service vault).Name -match "Vault"){
-      if ($localuser -eq $true){
+    if (-not ((get-service vault -ErrorAction "ignore").Name -match "Vault" )){
+      if ($serviceUser -eq $true){
         $FileExe="${VAULT_DIR}/vault.exe"
         nssm install Vault "$FileExe"
         nssm set Vault AppParameters "server -config=${VAULT_DIR}"
