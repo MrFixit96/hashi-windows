@@ -21,7 +21,7 @@ Param (
   
   [Parameter(
     HelpMessage = 'CONSUL_VERSION is which version you want to download and install')]
-  [string] $CONSUL_VERSION = '1.7.3',
+  [string] $CONSUL_VERSION = '1.7.4',
  
   [Parameter(
     HelpMessage = 'CONSUL_URL is where to download Consul from. It defaults to https://releases.hashicorp.com/consul')]
@@ -42,6 +42,10 @@ Param (
   [Parameter(
     HelpMessage = 'VAULT_DIR is where to install Vault. Defaults to C:\\Program Files\\Hashicorp\\Vault')]
   [string] $VAULT_DIR = "C:/Hashicorp/Vault",  
+
+  [Parameter(
+    HelpMessage = 'Whether to use Consul or Raft in Vault backend config')]
+  [string] $USE_RAFT = $null,
 
   [Parameter(
     HelpMessage = 'Specify which action to take (Install-All, Install-Vault, Install-Consul)')]
@@ -89,12 +93,16 @@ Function Install-All {
   # Install and Configure Consul Storage Backend First
   write-host "Installing ${CONSUL_DIR}\Consul.exe"
   Install-Consul
+
   write-host "Writing ${CONSUL_DIR}\consul-server.hcl"
   Configure-Consul
+
   write-host "Writing TLS Certs to ${CONSUL_DIR}\certs\"
   Create-Certs-Consul
+
   write-host "Starting the Consul Service"
   Start-Consul
+
   write-host "Bootstrapping Consul ACL System"
   Setup-ACL
 
@@ -105,8 +113,26 @@ Function Install-All {
   # Configure Consul Agent on Vault Server to connect to backend cluster
   #Configure-Consul-Agent
 
-
   Start-Vault
+
+  $env:VAULT_HTTP_ADDR="https://127.0.0.1:8200"
+  $env:CONSUL_HTTP_ADDR="https://127.0.0.1:7501"
+
+  $env:VAULT_CACERT="${VAULT_DIR}/certs/consul-agent-ca.pem" 
+  $env:VAULT_CLIENT_KEY="${VAULT_DIR}/certs/dc1-client-consul-0-key.pem"
+  $env:VAULT_CLIENT_CERT="${VAULT_DIR}/certs/dc1-client-consul-0.pem"
+
+  $env:CONSUL_CACERT="${CONSUL_DIR}/certs/consul-agent-ca.pem"
+  $env:CONSUL_CLIENT_KEY="${CONSUL_DIR}/certs/dc1-client-consul-0-key.pem"
+  $env:CONSUL_CLIENT_CERT="${CONSUL_DIR}/certs/dc1-client-consul-0.pem"
+
+  $env:CONSUL_HTTP_SSL="true"
+  $env:CONSUL_TOKEN=${env:CONSUL_MGMNT_TOKEN}
+
+  write-host "\n CONSUL MANAMGENT TOKEN: $env:CONSUL_MGMT_TOKEN \n"
+  write-host "\n CONSUL AGENT TOKEN:     $env:CONSUL_AGENT_TOKEN \n"
+  write-host "\n CONSUL VAULT TOKEN:     $env:CONSUL_VAULT_TOKEN \n"
+
 }
 
 ##############################################################################################
@@ -143,7 +169,7 @@ Function Install-Consul {
 
   # Add Consul directory to the system path (both current and future)
   $env:path += ";${CONSUL_DIR}"
-  [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";${CONSUL_DIR}", "Machine")
+  [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "Machine") + ";${CONSUL_DIR}", "Machine")
 
   # Set ProgressBar preference back to normal
   $ProgressPreference = $CurrentProgressPref;
@@ -181,7 +207,7 @@ Function Install-Vault {
 
   # Add Vault directory to the system path (both current and future)
   $env:path += ";${VAULT_DIR}"
-  [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";${VAULT_DIR}", "Machine")
+  [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "Machine") + ";${VAULT_DIR}", "Machine")
 
   # Set ProgressBar preference back to normal
   $ProgressPreference = $CurrentProgressPref;
@@ -198,7 +224,8 @@ Function Configure-Consul {
 @"
 datacenter = `"dc1`"
 data_dir = "${CONSUL_DIR}/data"
-
+enable_script_checks    = false
+disable_remote_exec     = true
 #retry_join = [`"xxx.xxx.xxx.xxx`"]
 
 performance {
@@ -206,7 +233,7 @@ performance {
 }
 
 server = true
-bootstrap_expect = 3
+bootstrap_expect = 1
 
 log_file = "${CONSUL_DIR}/consul.log"
 log_rotate_bytes = 102400
@@ -219,6 +246,21 @@ verify_outgoing = true
 verify_server_hostname = true
 
 ui = true
+
+addresses {
+  http  = `"0.0.0.0`"
+  https = `"0.0.0.0`"
+  dns   = `"0.0.0.0`"
+}
+
+ports {
+  dns         = 7600
+  http        = 7500
+  https       = 7501
+  serf_lan    = 7301
+  serf_wan    = 7302
+  server      = 7300
+}
 client_addr = `"0.0.0.0`"
 
 "@ | Out-File -Encoding ASCII -FilePath "${CONSUL_DIR}/consul-server.hcl"
@@ -309,15 +351,31 @@ disable_mlock = true
     $api_ip ="api_addr = `"https://" + (get-netipaddress -AddressFamily IPv4 -interfaceAlias Ethernet).ipaddress + "`""
     Add-Content -Encoding ASCII -Path ${VAULT_DIR}/vault-server.hcl -Value $cluster_ip
 
-# Create vault-storage.hcl
-$multiline_string = @"
+if ($USE_RAFT){
+# Create vault-storage-raft.hcl
+@"
 storage "raft" {
   path = "${VAULT_DIR}/data"
   node_id = "raft_node_1"
 }
 
-"@  | Out-File -Encoding ASCII -FilePath "${VAULT_DIR}/vault-storage.hcl"
+"@  | Out-File -Encoding ASCII -FilePath "${VAULT_DIR}/vault-raft-storage.hcl"
+} else {
 
+@"
+  storage "consul" {
+    address         = "127.0.0.1:7501"
+    path            = "vault/"
+    scheme          = "https"
+    token           = "${CONSUL_VAULT_TOKEN}"
+    tls_cert_file = "${CONSUL_DIR}/certs/dc1-server-consul-0.pem"
+    tls_key_file  = "${CONSUL_DIR}/certs/dc1-server-consul-0-key.pem"
+    tls_skip_verify = "true"
+  }
+
+"@  | Out-File -Encoding ASCII -FilePath "${VAULT_DIR}/vault-consul-storage.hcl"
+
+}
 <# UnComment These Lines to use AutoUnseal
 
 # Create vault-seal.hcl
@@ -364,11 +422,14 @@ telemetry {
     if (-not (Test-Path "c:\nssm-2.24")){ 
       Invoke-WebRequest http://nssm.cc/release/nssm-2.24.zip -Outfile "${home}\Downloads\nssm-2.24.zip"
       Expand-Archive -Confirm:$false "${home}\Downloads\nssm-2.24.zip" "C:\"
+      $env:Path=$env:Path+";c:\nssm-2.24\win64\"  
     }
 
     #Create Service and Start it
     $FileExe="${VAULT_DIR}/vault.exe"
-    & "C:\nssm-2.24\win64\nssm.exe" install Vault "$FileExe server -configdir=${VAULT_DIR}"
+    nssm install Vault "$FileExe"
+    nssm set Vault AppParameters "server -config=${VAULT_DIR}"
+    nssm set Vault AppDirectory  "${VAULT_DIR}"
 
     # This is what it would look like if Vault could use the native manager
     #New-Service -Name Vault -BinaryPathName "${VAULT_DIR}\vault.exe -configdir=${VAULT_DIR}"  -DisplayName Vault -Description "Hashicorp Vault Service https://vaultproject.io" -StartupType "Automatic" -Credential $Credential
@@ -445,23 +506,36 @@ Function Create-Certs-Consul {
 #
 #####################################################################################################
 Function Setup-ACL {
+  # No idea why, but right now this function only behaves if I re-run Install-Consul.
+  Install-Consul
 
   #If Consul isnt present, download Consul and Install it just to generate Certs
-  if (-not (Test-Path "$CONSUL_DIR/consul.exe")){
-    Install-Consul
-  }
+  #if (-not ((get-service consul).status -match "Running") -eq $true){
+  #  Install-Consul
+  #  start-service consul
+  #}
     
   if (-not (Test-Path "$CONSUL_DIR/policies")){
     mkdir "$CONSUL_DIR/policies"
   }
 
+  $env:CONSUL_HTTP_ADDR="https://127.0.0.1:7501"
+  $env:CONSUL_CACERT="${CONSUL_DIR}/certs/consul-agent-ca.pem"
+  $env:CONSUL_CLIENT_KEY="${CONSUL_DIR}/certs/dc1-client-consul-0-key.pem"
+  $env:CONSUL_CLIENT_CERT="${CONSUL_DIR}/certs/dc1-client-consul-0.pem"
+  $env:CONSUL_HTTP_SSL="true"
+
   $acl_tokens = (consul acl bootstrap)
 
   #Set the CONSUL_MGMT_TOKEN environment variable so we can create policies
-  $CONSUL_MGMT_TOKEN = "" #?????? WHAT GOES HERE ?????
+  $env:CONSUL_MGMT_TOKEN = `
+  foreach ( $token in $acl_tokens){
+    if ($token.Split(':')[0] -match "SecretID") {($token.Split(':')[1]).trim();}
+  }
+  
 
 # Create the node policy file
-$multiline_string = @'
+@'
 agent_prefix "" {
   policy = "write"
 }
@@ -477,15 +551,66 @@ session_prefix "" {
 
 '@  | Out-File -Encoding ASCII -FilePath "${CONSUL_DIR}/policies/node-policy.hcl"
 
+# Generate Vault Policy
+@'
+{
+  "key_prefix": {
+    "vault/": {
+      "policy": "write"
+    }
+  },
+  "node_prefix": {
+    "": {
+      "policy": "write"
+    }
+  },
+  "service": {
+    "vault": {
+      "policy": "write"
+    }
+  },
+  "agent_prefix": {
+    "": {
+      "policy": "write"
+    }
+  },
+  "session_prefix": {
+    "": {
+      "policy": "write"
+    }
+  }
+}
+'@   | Out-File -Encoding ASCII -FilePath "${CONSUL_DIR}/policies/vault-policy.hcl"
+
   # Generate the Consul Node ACL Policy
-  consul acl policy create -token=${CONSUL_MGMT_TOKEN} -name "node-policy" -rules "@policies/node-policy.hcl"
+  consul acl policy create -token "${env:CONSUL_MGMT_TOKEN}" -name "node-policy" -rules "@${CONSUL_DIR}/policies/node-policy.hcl"
+
+  # Generate the Consul ACL Policy for Vault App
+  consul acl policy create -token "${env:CONSUL_MGMT_TOKEN}" -name "vault-policy" -rules "@${CONSUL_DIR}/policies/vault-policy.hcl"
 
   # Create the node token with the newly created policy.
-  $CONSUL_AGENT_TOKEN = (consul acl token create -token="${CONSUL_MGMT_TOKEN}" -description "node token" -policy-name "node-policy")
+  $acl_tokens = (consul acl token create -token "${env:CONSUL_MGMT_TOKEN}" -description "node token" -policy-name "node-policy")
+
+  $env:CONSUL_AGENT_TOKEN  = `
+  foreach ( $token in $acl_tokens){
+    if ($token.Split(':')[0] -match "SecretID") {($token.Split(':')[1]).trim();}
+  }
+
+  # Create the vault token with the newly created policy.
+  $acl_tokens = (consul acl token create -token "${env:CONSUL_MGMT_TOKEN}" -description "vault app token" -policy-name "vault-policy")
+  $env:CONSUL_VAULT_TOKEN  = `
+  foreach ( $token in $acl_tokens){
+    if ($token.Split(':')[0] -match "SecretID") {($token.Split(':')[1]).trim();}
+  }
 
   # On all Consul Servers add the node token
-  consul acl set-agent-token -token="${CONSUL_MGMT_TOKEN}" agent "$CONSUL_AGENT_TOKEN"
-
+  consul acl set-agent-token -token "${env:CONSUL_MGMT_TOKEN}" agent "$env:CONSUL_AGENT_TOKEN"
+  
+  write-host "\n CONSUL MANAMGENT TOKEN: $env:CONSUL_MGMT_TOKEN \n"
+  write-host "\n CONSUL AGENT TOKEN:     $env:CONSUL_AGENT_TOKEN \n"
+  write-host "\n CONSUL VAULT TOKEN:     $env:CONSUL_VAULT_TOKEN \n"
+  
+  
 }
 ######################################################################################################
 #
