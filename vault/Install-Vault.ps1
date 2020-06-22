@@ -29,7 +29,7 @@ Param (
 
   [Parameter(
     HelpMessage = '# CONSUL_DIR is where to install Consul. Defaults to C:\Hashicorp\Consul')]
-  [string] $CONSUL_DIR = "C:/Hashicorp/Consul",
+  [string] $CONSUL_DIR = 'C:/Hashicorp/Consul',
 
   [Parameter(
     HelpMessage = 'VAULT_VERSION is which version you want to download and install')]
@@ -41,7 +41,7 @@ Param (
 
   [Parameter(
     HelpMessage = 'VAULT_DIR is where to install Vault. Defaults to C:\\Program Files\\Hashicorp\\Vault')]
-  [string] $VAULT_DIR = "C:/Hashicorp/Vault",  
+  [string] $VAULT_DIR = 'C:/Hashicorp/Vault',  
 
   [Parameter(
     HelpMessage = 'Whether to use Consul or Raft in Vault backend config')]
@@ -53,7 +53,11 @@ Param (
 
   [Parameter(
     HelpMessage = 'Specify whether to create Consul Service using LocalSystem account or a dedicated account name consul (default :$true == LocalSystem)')]
-  [string] $serviceUser = $true 
+  [string] $serviceUser = $true,
+
+  [Parameter(
+    HelpMessage = 'Turn debug printing on/off')]
+  [string] $DebugPreference = "Continue"
 
   )
 
@@ -63,28 +67,48 @@ Param (
 #
 ############################################################################################## 
 Function Main {
+  write-debug "::-Action = $Action::"
+  write-debug "::-serviceUser = $serviceUser::"
+  write-debug ":: -CONSUL_VERSION = $CONSUL_VERSION::"
+  write-debug ":: -VAULT_VERSION = $VAULT_VERSION::"
+
 
   $location = (get-location).path
+  
 
   if ($Action){
     switch ($Action) {
-      'Install-Vault' { Install-Vault
+      'Install-Vault' { 
+                        write-host "Installing Vault"
+                        Install-Vault
                         Configure-Vault
                         Configure-Certs-Vault
                         Start-Vault
       }
-      'Install-Consul' { Install-Consul 
+      'Install-Consul' {
+                        write-host "Installing Consul" 
+                        Install-Consul 
                         Configure-Consul
                         Configure-Certs-Consul
                         Setup-ACL
                         Start-Consul
       }
+      'Install-ConsulAgent' {
+        write-host "Installing Consul" 
+        Install-ConsulAgent 
+        Configure-ConsulAgent
+        Configure-Certs-Consul
+        Start-ConsulAgent
+}
       'Install-All' { Install-All
+                    write-host "Installing Vault and Consul"
       }
       'Uninstall-All' { Uninstall-All
+                      write-host "Removing Vault and Consul as well as their services/users."  
       }
 
       Default { Install-All }
+              write-host "Installing Vault and Consul"
     }
   }
 }
@@ -113,11 +137,27 @@ Function Install-All {
   Setup-ACL | Out-Null
 
   # Install and Configure Vault Server
+  write-host "Installing ${VAULT_DIR}/Vault.exe"
   Install-Vault | Out-Null
+
+  write-host "Writing ${VAULT_DIR}/vault-server.hcl"
   Configure-Vault | Out-Null
+
+  write-host "Writing TLS Certs to ${VAULT_DIR}/certs/"
   Create-Certs-Vault | Out-Null
+
+##########################################################################  
+  # IF THIS IS A VAULT NODE, INSTALL CONSUL AGENT
+  #Install Consul Agent Service on Vault Nodes
+  Install-ConsulAgent
+
   # Configure Consul Agent on Vault Server to connect to backend cluster
-  #Configure-Consul-Agent
+  Configure-ConsulAgent
+
+  # Start ConsulAgent
+  Start-ConsulAgent
+  sleep -Seconds 10
+##########################################################################
 
   Start-Vault
 
@@ -193,6 +233,7 @@ Function Install-Consul {
 
   # Create Consul Directories to store binaries
   if (-not (Test-Path "$CONSUL_DIR")){
+    write-debug "::Creating directory Consul Directory $CONSUL_DIR::"
     mkdir "$CONSUL_DIR"
     mkdir "$CONSUL_DIR/data"
   
@@ -237,6 +278,7 @@ Function Install-Vault {
 
   # Create Consul Directories to store binaries
   if (-not (Test-Path "$VAULT_DIR")){
+    write-debug "::Creating Vault directory $VAULT_DIR::"
     mkdir "$VAULT_DIR"
     mkdir "$VAULT_DIR/data"
   
@@ -272,9 +314,11 @@ Function Install-Vault {
 #
 ######################################################################################################
 Function Configure-Consul {
-    # Create consul-server.hcl
-    New-Item -type file -Path "$CONSUL_DIR" -name consul-server.hcl
+  # Create consul-server.hcl
+  New-Item -type file -Path "$CONSUL_DIR" -name consul-server.hcl
 
+  write-debug "Creating consul-server.hcl"
+  
 @"
 datacenter = `"dc1`"
 data_dir = "${CONSUL_DIR}/data"
@@ -320,14 +364,16 @@ client_addr = `"0.0.0.0`"
 "@ | Out-File -Encoding ASCII -FilePath "${CONSUL_DIR}/consul-server.hcl"
 
     # Execute Consul command to create a gossip key and store it in consul-server.hcl file
+    write-debug "Adding Gossip Key to consul-server.hcl"
     $enc_key=(consul keygen)
     Add-Content -Path "${CONSUL_DIR}/consul-server.hcl" -Value "encrypt = `"$enc_key`""
 
+    write-debug "Adding bind_addr to consul-server.hcl"
     $bind_ip=(get-netipaddress -AddressFamily IPv4 -interfaceAlias Ethernet).ipaddress 
     Add-Content -Path "${CONSUL_DIR}/consul-server.hcl" -Value "bind_addr = `"$bind_ip`""
 
 # Create consul-acl.hcl
-
+write-debug "Creating consul-acl.hcl"
 @'
 acl {
   enabled = true,
@@ -336,6 +382,7 @@ acl {
 }
 '@  | Out-File -Encoding ASCII -FilePath "${CONSUL_DIR}/consul-acl.hcl"
 
+write-debug "Creating consul-telemetry.hcl"
 # Create consul-telemetry.hcl
 @'
 // UnComment These Lines to forward telemetry 
@@ -356,8 +403,10 @@ telemetry {
     $securePassword = (ConvertTo-SecureString -AsPlainText -Force -String $password)
 
   if (-not ((get-localuser consul -ErrorAction "ignore").Name -match "consul")){
+    write-debug "Creating consul local user"
     New-LocalUser "consul" -FullName "Consul User" -Description "Consul Service Account" -Password $securePassword
     $Credential = New-Object -TypeName System.Management.Automation.PSCredential("consul", $securePassword)
+    write-debug "Got LocalUser Credential `n $Credential"
   }
 
   # Local GPO is not able to be edited natively via PowerShell. Please Set account logon rights manually
@@ -365,19 +414,20 @@ telemetry {
   try {
   # Create the Consul Service
   if (-not  ((get-service consul -ErrorAction "ignore").Name -match "Consul")){
-    write-host "Creating Service Consul"
+    write-debug "Creating Service Consul"
     if ($serviceUser -eq $true) {
-      write-host "Creating Consul Service with LocalSystem User"
+      write-debug "Creating Consul Service with LocalSystem User"
       New-Service -Name Consul -BinaryPathName "${CONSUL_DIR}/consul.exe agent -config-dir=${CONSUL_DIR}"  -DisplayName Consul -Description "Hashicorp Consul Service https://consul.io" -StartupType "Automatic"
     } else {
-      Write-host "Add 'Consul' User to the Local or AD GPO Policy to LogOnAsAservice"
-      write-host "Creating Consul Service with Consul User"
+      Write-debug "Add 'Consul' User to the Local or AD GPO Policy to LogOnAsAservice"
+      write-debug "Creating Consul Service with Consul User"
       New-Service -Name Consul -BinaryPathName "${CONSUL_DIR}/consul.exe agent -config-dir=${CONSUL_DIR}"  -DisplayName Consul -Description "Hashicorp Consul Service https://consul.io" -StartupType "Automatic" -Credential $Credential
     }
   }
   }
   catch {
-    "Could not create Consul Service"
+    "Could not create Consul User or Service"
+    write-debug "Massively failed creating user and service"
   }
 }
 
@@ -387,9 +437,9 @@ telemetry {
 #
 ######################################################################################################
 Function Configure-Vault {
-# Create vault-server.hcl
-New-Item -type file -Path "$VAULT_DIR" -name vault-server.hcl
-
+  # Create vault-server.hcl
+  New-Item -type file -Path "$VAULT_DIR" -name vault-server.hcl
+  write-debug "Creating vault-server.hcl"
 @"
 
 listener "tcp" {
@@ -408,15 +458,20 @@ disable_mlock = true
 "@  | Out-File -Encoding ASCII -FilePath "${VAULT_DIR}/vault-server.hcl"
 
     # Add Cluster_Addr to vault-server.hcl
+
     $cluster_ip ="cluster_addr = `"https://" + (get-netipaddress -AddressFamily IPv4 -interfaceAlias Ethernet).ipaddress + "`""
+    write-debug "Adding cluster_addr $cluster_ip to vault-server.hcl"
     Add-Content -Encoding ASCII -Path ${VAULT_DIR}/vault-server.hcl -Value $cluster_ip
 
     # Add api_addr to vault-server.hcl
     $api_ip ="api_addr = `"https://" + (get-netipaddress -AddressFamily IPv4 -interfaceAlias Ethernet).ipaddress + "`""
-    Add-Content -Encoding ASCII -Path ${VAULT_DIR}/vault-server.hcl -Value $cluster_ip
+    write-debug "Adding api_addr $api_ip to vault-server.hcl"
+    Add-Content -Encoding ASCII -Path ${VAULT_DIR}/vault-server.hcl -Value $api_ip
 
+# If USE_RAFT is set to true then creat internal storage, else use Consul Storage with consul client set to listen on loop-back address
 if ($USE_RAFT){
 # Create vault-storage-raft.hcl
+write-debug "Creating vault-storage-raft.hcl"
 @"
 storage "raft" {
   path = "${VAULT_DIR}/data"
@@ -425,7 +480,7 @@ storage "raft" {
 
 "@  | Out-File -Encoding ASCII -FilePath "${VAULT_DIR}/vault-raft-storage.hcl"
 } else {
-
+  write-debug "Creating vault-consul-storage.hcl"
 @"
   storage "consul" {
     address         = "127.0.0.1:7501"
@@ -443,6 +498,7 @@ storage "raft" {
 <# UnComment These Lines to use AutoUnseal
 
 # Create vault-seal.hcl
+write-debug "Create vault-seal.hcl"
 @"
 seal "pkcs11" {
   lib            = "${VAULT_DIR}\\cryptoki.dll"
@@ -457,6 +513,7 @@ seal "pkcs11" {
 <#
 # UnComment These Lines to forward telemetry 
 # Create vault-telemetry.hcl
+write-debug "Create vault-telemetry.hcl"
 @'
 telemetry {
   statsite_address = "statsite.company.local:8125"
@@ -470,9 +527,11 @@ telemetry {
     $password = (-join ((0x30.. 0x39) + ( 0x41.. 0x5A) + ( 0x61.. 0x7A) | Get-Random -Count 16 | % {[char]$_}))
     $securePassword = (ConvertTo-SecureString -AsPlainText -Force -String $password)
 
-    if (-not ((get-localuser vault -ErrorAction "ignore").Name -match "vault")){    
+    if (-not ((get-localuser vault -ErrorAction "ignore").Name -match "vault")){
+      write-debug "::Creating local user vault::"
       New-LocalUser "vault" -FullName "Vault User" -Description "Vault Service Account" -Password $securePassword
       $Credential = New-Object -TypeName System.Management.Automation.PSCredential("vault", $securePassword)
+      write-debug "::Created local user vault and got Credential $Credential::"
     }
 
     # Create the Vault Service 
@@ -486,7 +545,9 @@ telemetry {
 
     # Download NSSM
     if (-not (Test-Path "c:\nssm-2.24")){ 
+      write-debug "::Downloading NSSM::"
       Invoke-WebRequest http://nssm.cc/release/nssm-2.24.zip -Outfile "${home}\Downloads\nssm-2.24.zip"
+      write-debug "::Unzipping NSSM::"
       Expand-Archive -Force "${home}\Downloads\nssm-2.24.zip" "C:\"
       $env:Path=$env:Path+";c:\nssm-2.24\win64\"
       [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "Machine") + ";C:\nssm-2.24\win64\", "Machine")
@@ -495,11 +556,22 @@ telemetry {
     #Create Service and Start it
   try {
     if (-not ((get-service vault -ErrorAction "ignore").Name -match "Vault" )){
+      write-debug "::Creating Vault Service::"
       if ($serviceUser -eq $true){
+        write-debug "::Creating Vault Service with LocalSystem user::"
         $FileExe="${VAULT_DIR}/vault.exe"
         nssm install Vault "$FileExe"
         nssm set Vault AppParameters "server -config=${VAULT_DIR}"
         nssm set Vault AppDirectory  "${VAULT_DIR}"
+      } else {
+        # Figure out how to set service account with NSSM
+        write-debug "::Creating Vault Service with unique user Vault::"
+        $FileExe="${VAULT_DIR}/vault.exe"
+        nssm install Vault "$FileExe"
+        nssm set Vault AppParameters "server -config=${VAULT_DIR}"
+        nssm set Vault AppDirectory  "${VAULT_DIR}"
+        nssm set Vault ObjectName vault $securePassword
+      }
 
         # This is what it would look like if Vault could use the native manager and LocalSystem User
         #New-Service -Name Vault -BinaryPathName "${VAULT_DIR}\vault.exe -configdir=${VAULT_DIR}"  -DisplayName Vault -Description "Hashicorp Vault Service https://vaultproject.io" -StartupType "Automatic"
@@ -510,6 +582,7 @@ telemetry {
   }
   catch {
     "Could not create Vault Service"
+    write-debug "::Massively Failed to create Vault Service::"
   }
 }
 
@@ -522,28 +595,23 @@ Function Create-Certs-Vault {
  
   #If Consul isnt present, download Consul and Install it just to generate Certs
   if (-not (Test-Path "$CONSUL_DIR/consul.exe")){
+    write-debug "::Couldnt find Consul, so we're installing it again::"
     Install-Consul
   }
+
+  write-debug "::Creating Certs Dir::"
   mkdir "${VAULT_DIR}/certs"
 
   if (-not (Test-Path "$CONSUL_DIR/certs")){
+    write-debug "::Couldnt find Consul Certs, so creating them now::"
     Create-Certs-Consul
-    Set-Location "${CONSUL_DIR}/certs"
+
   }
+  Set-Location "${CONSUL_DIR}/certs"
 
-  # Execute Consul command to create the CA Cert we'll be building the rest of our certs from
-  consul tls ca create
-
-  # Execute the Consul command to create the server certs
-  consul tls cert create -server -dc "dc1"
-
-  # Run the following command with the -client flag to create client certificates. The file name increments automatically.
-  consul tls cert create -client -dc "dc1"
-
-  # You must distribute the CA certificate, consul-agent-ca.pem, to each of the Consul agent instances as well as the agent specific cert and private key.
-
-
+  Write-debug "::Copying Certs to Vault Directory::"
   Copy-Item "${CONSUL_DIR}/certs/*" -Destination "${VAULT_DIR}/certs/" -Confirm:$false
+
   Set-Location $location
 
 }
@@ -552,26 +620,30 @@ Function Create-Certs-Consul {
 
   #If Consul isnt present, download Consul and Install it just to generate Certs
   if (-not (Test-Path "$CONSUL_DIR/consul.exe")){
+    Write-debug "::Couldnt find Consul, so installing it again::"
     Install-Consul
   }
 
   if (-not (Test-Path "$CONSUL_DIR/certs")){
-    mkdir "${CONSUL_DIR}/certs"
+    Write-debug "::Couldnt find certs dir, so making a directory::"
+    mkdir "${CONSUL_DIR}/certs::"
   }
  
-  Set-Location "${CONSUL_DIR}/certs"
+  Set-Location "${CONSUL_DIR}/certs::"
 
   # Execute Consul command to create the CA Cert we'll be building the rest of our certs from
+  Write-debug "::Creating CA Cert::"
   consul tls ca create
 
   # Execute the Consul command to create the server certs
+  Write-debug "::Creating Server Cert::"
   consul tls cert create -server -dc "dc1"
 
   # Run the following command with the -client flag to create client certificates. The file name increments automatically.
+  Write-debug "::Creating Client cert::"
   consul tls cert create -client -dc "dc1"
 
   # You must distribute the CA certificate, consul-agent-ca.pem, to each of the Consul agent instances as well as the agent specific cert and private key.
-
 
   Set-Location $location
 
@@ -588,11 +660,14 @@ Function Setup-ACL {
 
   # If Consul isnt present, download Consul and Install it just to generate Certs
   if (-not ((get-service consul).status -match "Running") -eq $true){
+    Write-debug ":: couldnt find Consul Service, so installing it again::"
     Install-Consul
+    Configure-Consul
     start-service consul
   }
     
   if (-not (Test-Path "$CONSUL_DIR/policies")){
+    Write-debug "::Creating Policies Dir::"
     mkdir "$CONSUL_DIR/policies"
   }
 
@@ -601,8 +676,14 @@ Function Setup-ACL {
   $env:CONSUL_CLIENT_KEY="${CONSUL_DIR}/certs/dc1-client-consul-0-key.pem"
   $env:CONSUL_CLIENT_CERT="${CONSUL_DIR}/certs/dc1-client-consul-0.pem"
   $env:CONSUL_HTTP_SSL="true"
-
+  Write-debug "::Setting up ENV for ACL Bootstrapping `n 
+              ::$env:CONSUL_HTTP_ADDR:: `n
+              ::$env:CONSUL_CACERT:: `n
+              ::$env:CONSUL_CLIENT_CERT:: `n
+              ::$env:CONSUL_HTTP_SSL::"
   $acl_tokens = (consul acl bootstrap)
+  Write-debug "::Bootstrapping Consul ACL system:: `n
+              ACL Token: $acl_tokens::"
 
   #Set the CONSUL_MGMT_TOKEN environment variable so we can create policies
   $env:CONSUL_MGMT_TOKEN = `
@@ -612,6 +693,7 @@ Function Setup-ACL {
   
 
 # Create the node policy file
+Write-debug "::Creating the node policy file::"
 @'
 agent_prefix "" {
   policy = "write"
@@ -629,6 +711,7 @@ session_prefix "" {
 '@  | Out-File -Encoding ASCII -FilePath "${CONSUL_DIR}/policies/node-policy.hcl"
 
 # Generate Vault Policy
+Write-debug "::Creating Vault policy file::"
 @'
 {
   "key_prefix": {
@@ -660,32 +743,40 @@ session_prefix "" {
 '@   | Out-File -Encoding ASCII -FilePath "${CONSUL_DIR}/policies/vault-policy.hcl"
 
   # Generate the Consul Node ACL Policy
+  Write-debug "::Generating Consul Node-Policy based on the policies/node-policy.hcl file::"
   consul acl policy create -token "${env:CONSUL_MGMT_TOKEN}" -name "node-policy" -rules "@${CONSUL_DIR}/policies/node-policy.hcl"
 
   # Generate the Consul ACL Policy for Vault App
+  Write-debug "::Generating Consul Vault-Policy based on the policies/vault-policy.hcl file::"
   consul acl policy create -token "${env:CONSUL_MGMT_TOKEN}" -name "vault-policy" -rules "@${CONSUL_DIR}/policies/vault-policy.hcl"
 
   # Create the node token with the newly created policy.
+  Write-debug "::Generating the AGENT Token from the node-policy::"
   $acl_tokens = (consul acl token create -token "${env:CONSUL_MGMT_TOKEN}" -description "node token" -policy-name "node-policy")
 
+  Write-debug "::Parsing AGENT TOKEN from reply::"
   $env:CONSUL_AGENT_TOKEN  = `
   foreach ( $token in $acl_tokens){
     if ($token.Split(':')[0] -match "SecretID") {($token.Split(':')[1]).trim();}
   }
 
   # Create the vault token with the newly created policy.
+  Write-debug "::Creating VAULT_TOKEN for storage backend writes from the vault-policy::"
   $acl_tokens = (consul acl token create -token "${env:CONSUL_MGMT_TOKEN}" -description "vault app token" -policy-name "vault-policy")
+
+  Write-debug "::Parsing VAULT_TOKEN from reply::"
   $env:CONSUL_VAULT_TOKEN  = `
   foreach ( $token in $acl_tokens){
     if ($token.Split(':')[0] -match "SecretID") {($token.Split(':')[1]).trim();}
   }
 
   # On all Consul Servers add the node token
+  Write-debug "::Adding Agent Token to the current node::"
   consul acl set-agent-token -token "${env:CONSUL_MGMT_TOKEN}" agent "$env:CONSUL_AGENT_TOKEN"
   
-  write-debug "`n CONSUL MANAMGENT TOKEN: $env:CONSUL_MGMT_TOKEN `n"
-  write-debug "`n CONSUL AGENT TOKEN:     $env:CONSUL_AGENT_TOKEN `n"
-  write-debug "`n CONSUL VAULT TOKEN:     $env:CONSUL_VAULT_TOKEN `n"
+  write-debug "`n ::CONSUL MANAMGENT TOKEN: $env:CONSUL_MGMT_TOKEN::`n"
+  write-debug "`n ::CONSUL AGENT TOKEN:     $env:CONSUL_AGENT_TOKEN::`n"
+  write-debug "`n ::CONSUL VAULT TOKEN:     $env:CONSUL_VAULT_TOKEN:: `n"
   
   
 }
@@ -695,7 +786,7 @@ session_prefix "" {
 #
 #####################################################################################################
 Function Start-Consul {
-  
+  Write-debug "::Starting Consul Service::"
   start-service consul
   
   # Use this to start it manually
@@ -709,6 +800,7 @@ Function Start-Consul {
 #####################################################################################################
 Function Start-Vault {
   # Call NSSM to start Vault Service
+  Write-debug "::Starting Vault Service::"
   & "C:\nssm-2.24\win64\nssm.exe" start Vault
   
   # Use this to start it manually
@@ -718,3 +810,4 @@ Function Start-Vault {
 
 ### Start Program
 Main
+Write-debug "::Starting Main Function::"
