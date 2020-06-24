@@ -1,18 +1,18 @@
-#Windows Install Scripts for Hashicorp Tools
+# Windows Install Scripts for Hashicorp Tools
 ---
-##NAME
+## NAME
   Install-Vault.ps1
-##SYNOPSIS
+## SYNOPSIS
   Downloads and Installs Vault and Consul
   
-##DESCRIPTION
+## DESCRIPTION
   This script will:
   * Download the requested Vault and Consul binaries
   * Unzips and install them to the chosen location
   * Write Example Configuration Files
   * Set up Consul ACLs
 
-###Examples: 
+### Examples: 
 * To Simply Install Vault and Consul as a service using the LocalSystem user run the following:,
   `.\Install-Vault.ps1 -CONSUL_VERSION "1.7.4" -VAULT_VERSION "1.4.2"`
 
