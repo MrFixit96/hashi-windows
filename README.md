@@ -1,8 +1,11 @@
 # Windows Install Scripts for Hashicorp Tools
-## NAME Install-Vault.ps1
-## SYNOPSIS Downloads and Installs Vault and Consul
+## NAME: 
+Install-Vault.ps1
+## SYNOPSIS: 
+Downloads and Installs Vault and Consul
 
-## DESCRIPTION This script will:
+## DESCRIPTION:
+This script will:
 
 Download the requested Vault and Consul binaries
 Unzips and install them to the chosen location
