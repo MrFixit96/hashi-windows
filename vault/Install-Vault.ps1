@@ -583,8 +583,6 @@ Function Create-Certs-Consul {
 #
 #####################################################################################################
 Function Setup-ACL {
-  # No idea why, but right now this function only behaves if I re-run Install-Consul.
-  #Install-Consul
 
   # If Consul isnt present, download Consul and Install it just to generate Certs
   if (-not ((get-service consul).status -match "Running") -eq $true){
