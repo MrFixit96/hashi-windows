@@ -14,8 +14,11 @@
   
 ### Requirements:
 * This script requires Powershell to be opened as an Administrator
-* Windows Firewall rules must allow access to:
-  * port tcp-8200 (vault)
+* This script is patterned after the [Vault Reference Architecture](https://learn.hashicorp.com/vault/operations/ops-reference-architecture) as much as possible, and as such uses non-standard ports for Consul backed storage
+
+  Windows Firewall rules must allow access to:
+  * port tcp-8200 (vault api)
+  * port tcp-8201 (vault replication)
   * port tcp-7300 (consul server)
   * port tcp/udp-7301 (consul Lan Serf)
   * port tcp/udp-7302 (consul Wan Serf)
