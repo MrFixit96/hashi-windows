@@ -21,7 +21,7 @@ Param (
   
   [Parameter(
     HelpMessage = 'CONSUL_VERSION is which version you want to download and install')]
-  [string] $CONSUL_VERSION = '1.7.4',
+  [string] $CONSUL_VERSION = '1.8.2',
  
   [Parameter(
     HelpMessage = 'CONSUL_URL is where to download Consul from. It defaults to https://releases.hashicorp.com/consul')]
@@ -33,7 +33,7 @@ Param (
 
   [Parameter(
     HelpMessage = 'VAULT_VERSION is which version you want to download and install')]
-  [string] $VAULT_VERSION = '1.4.2',
+  [string] $VAULT_VERSION = '1.7.3',
 
   [Parameter(
     HelpMessage = 'VAULT_URL is where to download Vault from. It defaults to https://releases.hashicorp.com/vault')]
@@ -70,12 +70,12 @@ Function Main {
     switch ($Action) {
       'Install-Vault' { Install-Vault
                         Configure-Vault
-                        Configure-Certs-Vault
+                        Create-Certs-Vault
                         Start-Vault
       }
       'Install-Consul' { Install-Consul 
                         Configure-Consul
-                        Configure-Certs-Consul
+                        Create-Certs-Vault
                         Setup-ACL
                         Start-Consul
       }
@@ -235,7 +235,7 @@ Function Install-Consul {
 ##############################################################################################
 Function Install-Vault {
 
-  # Create Consul Directories to store binaries
+  # Create Vault Directories to store binaries
   if (-not (Test-Path "$VAULT_DIR")){
     mkdir "$VAULT_DIR"
     mkdir "$VAULT_DIR/data"
@@ -413,7 +413,7 @@ disable_mlock = true
 
     # Add api_addr to vault-server.hcl
     $api_ip ="api_addr = `"https://" + (get-netipaddress -AddressFamily IPv4 -interfaceAlias Ethernet).ipaddress + "`""
-    Add-Content -Encoding ASCII -Path ${VAULT_DIR}/vault-server.hcl -Value $cluster_ip
+    Add-Content -Encoding ASCII -Path ${VAULT_DIR}/vault-server.hcl -Value $api_ip
 
 if ($USE_RAFT){
 # Create vault-storage-raft.hcl
@@ -467,12 +467,25 @@ telemetry {
 
     ############################
     # Create a unique, non-privileged system user to run Vault.
-    $password = (-join ((0x30.. 0x39) + ( 0x41.. 0x5A) + ( 0x61.. 0x7A) | Get-Random -Count 16 | % {[char]$_}))
-    $securePassword = (ConvertTo-SecureString -AsPlainText -Force -String $password)
+    try {
+        $password = (-join ((0x30.. 0x39) + ( 0x41.. 0x5A) + ( 0x61.. 0x7A) | Get-Random -Count 16 | % {[char]$_}))
+        $securePassword = (ConvertTo-SecureString -AsPlainText -Force -String $password)
 
-    if (-not ((get-localuser vault -ErrorAction "ignore").Name -match "vault")){    
-      New-LocalUser "vault" -FullName "Vault User" -Description "Vault Service Account" -Password $securePassword
-      $Credential = New-Object -TypeName System.Management.Automation.PSCredential("vault", $securePassword)
+        if (-not ((get-localuser vault -ErrorAction "ignore").Name -match "vault")){    
+          New-LocalUser "vault" -FullName "Vault User" -Description "Vault Service Account" -Password $securePassword
+          $Credential = New-Object -TypeName System.Management.Automation.PSCredential("vault", $securePassword)
+        }
+
+        $acl = Get-Acl ${VAULT_DIR}
+
+        $AccessRule = New-Object System.Security.AccessControl.FileSystemAccessRule(".\vault","FullControl","Allow")
+
+        $acl.SetAccessRule($AccessRule)
+
+        $acl | Set-Acl ${VAULT_DIR}
+        }
+    catch {
+        "[ERROR] Could not create Vault User"
     }
 
     # Create the Vault Service 
@@ -497,19 +510,24 @@ telemetry {
     if (-not ((get-service vault -ErrorAction "ignore").Name -match "Vault" )){
       if ($serviceUser -eq $true){
         $FileExe="${VAULT_DIR}/vault.exe"
+        echo "Creating Vault Service"
+        
         nssm install Vault "$FileExe"
         nssm set Vault AppParameters "server -config=${VAULT_DIR}"
         nssm set Vault AppDirectory  "${VAULT_DIR}"
+        nssm set Vault Description "Hashicorp Vault Service https://vaultproject.io"
+        nssm set Vault Start SERVICE_AUTO_START
+        #nssm set Vault ObjectName vault $securePassword
 
         # This is what it would look like if Vault could use the native manager and LocalSystem User
-        #New-Service -Name Vault -BinaryPathName "${VAULT_DIR}\vault.exe -configdir=${VAULT_DIR}"  -DisplayName Vault -Description "Hashicorp Vault Service https://vaultproject.io" -StartupType "Automatic"
+        #New-Service -Name Vault-Svc -BinaryPathName "${VAULT_DIR}\vault.exe server -config=${VAULT_DIR}"  -DisplayName Vault-Svc -Description "Hashicorp Vault Service https://vaultproject.io" -StartupType "Automatic"
         # This is what it would look like if Vault could use the native manager and a unique user
-        #New-Service -Name Vault -BinaryPathName "${VAULT_DIR}\vault.exe -configdir=${VAULT_DIR}"  -DisplayName Vault -Description "Hashicorp Vault Service https://vaultproject.io" -StartupType "Automatic" -Credential $Credential
+        #New-Service -Name Vault -BinaryPathName "${VAULT_DIR}\vault.exe -config=${VAULT_DIR}"  -DisplayName Vault -Description "Hashicorp Vault Service https://vaultproject.io" -StartupType "Automatic" -Credential $Credential
       }
     }
   }
   catch {
-    "Could not create Vault Service"
+    "[ERROR] Could not create Vault Service"
   }
 }
 
@@ -708,7 +726,8 @@ Function Start-Consul {
 Function Start-Vault {
   # Call NSSM to start Vault Service
   & "C:\nssm-2.24\win64\nssm.exe" start Vault
-  
+  #start-service vault
+
   # Use this to start it manually
   #vault.exe server -config="${VAULT_DIR}"
 }
