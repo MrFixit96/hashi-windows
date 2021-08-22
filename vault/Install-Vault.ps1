@@ -21,7 +21,7 @@ Param (
   
   [Parameter(
     HelpMessage = 'CONSUL_VERSION is which version you want to download and install')]
-  [string] $CONSUL_VERSION = '1.8.2',
+  [string] $CONSUL_VERSION = '1.10.1',
  
   [Parameter(
     HelpMessage = 'CONSUL_URL is where to download Consul from. It defaults to https://releases.hashicorp.com/consul')]
