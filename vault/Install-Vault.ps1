@@ -431,7 +431,7 @@ storage "raft" {
     address         = "127.0.0.1:7501"
     path            = "vault/"
     scheme          = "https"
-    token           = "${CONSUL_VAULT_TOKEN}"
+    token           = "$env:CONSUL_VAULT_TOKEN"
     tls_cert_file = "${CONSUL_DIR}/certs/dc1-server-consul-0.pem"
     tls_key_file  = "${CONSUL_DIR}/certs/dc1-server-consul-0-key.pem"
     tls_skip_verify = "true"
